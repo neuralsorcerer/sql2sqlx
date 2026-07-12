@@ -16,6 +16,7 @@ BigQuery SQL -> Dataform SQLX migration tooling.
 [![Test Windows](https://github.com/neuralsorcerer/sql2sqlx/actions/workflows/test_windows.yml/badge.svg)](https://github.com/neuralsorcerer/sql2sqlx/actions/workflows/test_windows.yml?query=branch%3Amain)
 [![Test MacOS](https://github.com/neuralsorcerer/sql2sqlx/actions/workflows/test_macos.yml/badge.svg)](https://github.com/neuralsorcerer/sql2sqlx/actions/workflows/test_macos.yml?query=branch%3Amain)
 [![Lints](https://github.com/neuralsorcerer/sql2sqlx/actions/workflows/lints.yml/badge.svg)](https://github.com/neuralsorcerer/sql2sqlx/actions/workflows/lints.yml?query=branch%3Amain)
+[![CodeQL](https://github.com/neuralsorcerer/sql2sqlx/actions/workflows/codeql.yml/badge.svg)](https://github.com/neuralsorcerer/sql2sqlx/actions/workflows/codeql.yml?query=branch%3Amain)
 [![Dataform Compile](https://github.com/neuralsorcerer/sql2sqlx/actions/workflows/dataform_compile.yml/badge.svg)](https://github.com/neuralsorcerer/sql2sqlx/actions/workflows/dataform_compile.yml?query=branch%3Amain)
 [![Build](https://github.com/neuralsorcerer/sql2sqlx/actions/workflows/build.yml/badge.svg)](https://github.com/neuralsorcerer/sql2sqlx/actions/workflows/build.yml?query=branch%3Amain)
 [![Documentation](https://github.com/neuralsorcerer/sql2sqlx/actions/workflows/docs.yml/badge.svg)](https://neuralsorcerer.github.io/sql2sqlx/)
