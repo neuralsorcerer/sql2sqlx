@@ -604,8 +604,57 @@ def test_literal_sqlx_markers_are_context_aware() -> None:
     )
     content = result.files[0].content
     assert "-- ${comment stays a comment}" in content
-    assert """'${"${"}string_marker}'""" in content
+    assert "${\"'${string_marker}'\"}" in content
     assert '${"`${identifier_marker}`"}' in content
+
+
+def test_google_hash_comments_are_normalized_for_sqlx() -> None:
+    result = convert_string(
+        "# ${comment_marker}\n"
+        "CREATE TABLE d.hash_comments AS\n"
+        "SELECT 1 AS id # config {\n"
+        "FROM UNNEST([1]);\n"
+        "# trailing ${marker}\n"
+    )
+    content = result.files[0].content
+    assert "# ${comment_marker}" not in content
+    assert "-- ${comment_marker}" in content
+    assert "SELECT 1 AS id -- config {" in content
+    assert "-- trailing ${marker}" in content
+
+
+def test_sqlx_separator_comment_lines_are_neutralized() -> None:
+    result = convert_string(
+        "CREATE TABLE d.separator_comments AS\n"
+        "SELECT 1 AS id;\n"
+        "---\n"
+        "  ---\n"
+        "-- ---\n"
+        "---- \n"
+        "--- description\n"
+    )
+    content = result.files[0].content
+    assert "\n-- ---\n" in content
+    assert content.count("\n-- ---\n") >= 2
+    assert "\n-- ---\n---- \n--- description" in content
+
+
+def test_string_literals_with_sqlx_markers_are_replaced_as_whole_tokens() -> None:
+    result = convert_string(
+        "CREATE TABLE d.literal_forms AS SELECT "
+        "'${single}' AS s, "
+        '"${double}" AS d, '
+        "r'''${raw_triple}''' AS rt, "
+        'B"${bytes}" AS b, '
+        "RB'${raw_bytes}' AS rb;"
+    )
+    content = result.files[0].content
+    assert "${\"'${single}'\"}" in content
+    assert '${"\\"${double}\\""}' in content
+    assert "${\"r'''${raw_triple}'''\"}" in content
+    assert '${"B\\"${bytes}\\""}' in content
+    assert "${\"RB'${raw_bytes}'\"}" in content
+    assert '\'${"${"}' not in content
 
 
 def test_source_annotation_cannot_be_broken_by_filename_newlines() -> None:

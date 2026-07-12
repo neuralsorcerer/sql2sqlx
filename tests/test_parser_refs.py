@@ -366,7 +366,7 @@ def test_self_reference_stays_literal_with_warning():
 
 def test_dollar_brace_is_escaped():
     r = conv("CREATE TABLE d.t AS SELECT '${literal}' AS v;")
-    assert """'${"${"}literal}'""" in by_name(r, "t").content
+    assert "${\"'${literal}'\"}" in by_name(r, "t").content
 
 
 def test_delete_target_not_treated_as_read():

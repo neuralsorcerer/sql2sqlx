@@ -46,7 +46,13 @@ from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
-from sql2sqlx.emitter import apply_edits_escaped, build_sqlx, ref_expr, sqlx_escape_edits
+from sql2sqlx.emitter import (
+    apply_edits_escaped,
+    build_sqlx,
+    normalize_sqlx_comment,
+    ref_expr,
+    sqlx_escape_edits,
+)
 from sql2sqlx.errors import ConversionError, LexError
 from sql2sqlx.lexer import IDENT, OP, LineIndex, Token, tokenize
 from sql2sqlx.model import (
@@ -1058,12 +1064,12 @@ class _Linker:
         leading = None
         spans = [(a, b) for a, b in self._comments(f) if prev_end <= a and b <= d.stmt_start]
         if spans:
-            leading = "\n".join(f.text[a:b] for a, b in spans)
+            leading = "\n".join(normalize_sqlx_comment(f.text[a:b]) for a, b in spans)
         trailing = None
         if is_last_in_file:
             tail_spans = [(a, b) for a, b in self._comments(f) if a >= d.stmt_end]
             if tail_spans:
-                trailing = "\n".join(f.text[a:b] for a, b in tail_spans)
+                trailing = "\n".join(normalize_sqlx_comment(f.text[a:b]) for a, b in tail_spans)
         body = None
         if d.action_type is not ActionType.DECLARATION:
             # Semantic rewrites own their complete source spans. In
@@ -1077,11 +1083,17 @@ class _Linker:
                     semantic[0] < escape[1] and escape[0] < semantic[1] for semantic in d.edits
                 )
             ]
+            comment_edits = []
+            for a, b in self._comments(f):
+                if d.body_start <= a and b <= d.body_end:
+                    normalized = normalize_sqlx_comment(f.text[a:b])
+                    if normalized != f.text[a:b]:
+                        comment_edits.append((a, b, normalized))
             body = apply_edits_escaped(
                 f.text,
                 d.body_start,
                 d.body_end,
-                d.edits + escape_edits,
+                d.edits + escape_edits + comment_edits,
             )
         content = build_sqlx(config, body, annotation, leading, trailing)
 

@@ -12,12 +12,15 @@ select-list aliases, ``${self()}`` substitutions) to slices of the
 **original** source text - tokens are never re-serialized, so the user's
 formatting, casing and inline comments survive after input decoding.
 
-Two SQLX-specific safety rules live here:
+SQLX-specific safety rules live here:
 
 * Any literal ``${`` in a SQL string or quoted identifier is emitted through
   a constant JavaScript placeholder. Dataform does not provide a backslash
   escape for SQL placeholders, so ``\\${`` is insufficient. Replacement text
   inserted *by* sql2sqlx (``${ref(...)}``, ``${self()}``) stays active.
+* GoogleSQL comments with SQLX-specific lexical hazards (``#`` comments and
+  exact ``---`` separator-looking comments) are normalized without changing
+  BigQuery semantics.
 * Operations bodies have exactly one trailing semicolon stripped:
   Dataform executes the body as a BigQuery script, and a trailing empty
   statement is at best noise.
@@ -29,7 +32,7 @@ import json
 import re
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
-from sql2sqlx.lexer import BACKTICK, PARAM, STRING, Token
+from sql2sqlx.lexer import BACKTICK, COMMENT, PARAM, STRING, Token
 from sql2sqlx.model import TableName
 
 #: Canonical top-level config key order (unknown keys follow, insertion-ordered).
@@ -62,6 +65,12 @@ _BQ_ORDER = (
 )
 
 _JS_IDENT_RE = re.compile(r"^[A-Za-z_$][A-Za-z0-9_$]*$")
+_SEPARATOR_COMMENT_RE = re.compile(r"^---[^\S\r\n]*$")
+#: Control characters that JSON encoding turns into ``\n``/``\t``/``\uXXXX``
+#: escapes. Dataform's placeholder-string lexer accepts only ``\"`` and ``\\``
+#: escapes (``/"(?:\\["\\]|[^\n"\\])*"/``), so a whole-string placeholder that
+#: embeds one of these characters cannot be lexed by Dataform.
+_JS_STRING_UNSAFE_RE = re.compile(r"[\x00-\x1f]")
 
 
 def _json(value: str) -> str:
@@ -74,32 +83,61 @@ def sqlx_constant(value: str) -> str:
     return "${" + _json(value) + "}"
 
 
-def sqlx_escape_edits(tokens: Sequence[Token]) -> List[Tuple[int, int, str]]:
-    """Build edits that preserve literal ``${`` through Dataform compile.
+def normalize_sqlx_comment(comment: str) -> str:
+    """Return a SQLX-safe spelling of a single GoogleSQL comment token.
 
-    GoogleSQL only permits ``$`` in the relevant valid inputs inside string
-    literals or quoted identifiers. String occurrences can be replaced by a
-    constant placeholder for the two characters. A quoted identifier must be
-    replaced as a whole because a SQLX placeholder nested between BigQuery
-    backticks produces invalid generated JavaScript.
+    Dataform SQLX treats ``---`` at the start of a line as a statement
+    separator and does not recognize GoogleSQL ``#`` line comments.  The
+    rewrites here preserve BigQuery semantics while preventing comment text
+    from being parsed as SQLX syntax.
+    """
+    if comment.startswith("#"):
+        # Rewriting ``#`` to ``--`` can itself produce a ``---`` separator
+        # line (e.g. the comment ``#-``), so fall through to the separator
+        # guard below instead of returning early.
+        comment = "--" + comment[1:]
+    if _SEPARATOR_COMMENT_RE.match(comment):
+        return "-- " + comment
+    return comment
+
+
+def sqlx_escape_edits(tokens: Sequence[Token]) -> List[Tuple[int, int, str]]:
+    """Build edits that keep literal SQL safe when parsed as SQLX.
+
+    Literal ``${`` in SQL strings, quoted identifiers, and quoted parameters
+    is emitted through a constant JavaScript placeholder because Dataform has
+    no SQL-level escape for placeholders.  String literals are replaced as
+    whole tokens so safety does not depend on Dataform's per-quote lexer
+    states.  A string that carries a control character (for example a
+    multi-line triple-quoted literal) cannot be embedded whole - JSON encoding
+    would introduce a ``\\n``/``\\t`` escape that Dataform's placeholder-string
+    lexer rejects - so each ``${`` in such a string is escaped in place, where
+    the surrounding SQL string state carries the raw characters unchanged.
+    GoogleSQL comments that are unsafe in SQLX are normalized as token edits.
     """
     edits: List[Tuple[int, int, str]] = []
     for token in tokens:
+        if token.kind == COMMENT:
+            normalized = normalize_sqlx_comment(token.text)
+            if normalized != token.text:
+                edits.append((token.start, token.end, normalized))
+            continue
         if "${" not in token.text:
             continue
-        if token.kind == BACKTICK or (token.kind == PARAM and token.text.startswith("@`")):
+        if token.kind == STRING and _JS_STRING_UNSAFE_RE.search(token.text):
+            offset = 0
+            while True:
+                offset = token.text.find("${", offset)
+                if offset < 0:
+                    break
+                start = token.start + offset
+                edits.append((start, start + 2, sqlx_constant("${")))
+                offset += 2
+            continue
+        if token.kind in {BACKTICK, STRING} or (
+            token.kind == PARAM and token.text.startswith("@`")
+        ):
             edits.append((token.start, token.end, sqlx_constant(token.text)))
-            continue
-        if token.kind != STRING:
-            continue
-        offset = 0
-        while True:
-            offset = token.text.find("${", offset)
-            if offset < 0:
-                break
-            start = token.start + offset
-            edits.append((start, start + 2, sqlx_constant("${")))
-            offset += 2
     return edits
 
 
