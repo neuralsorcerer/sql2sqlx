@@ -9,7 +9,6 @@ BigQuery SQL -> Dataform SQLX migration tooling.
 
 <div align="center">
 
-[![Current Release](https://img.shields.io/github/release/neuralsorcerer/sql2sqlx.svg)](https://github.com/neuralsorcerer/sql2sqlx/releases)
 [![PyPI](https://img.shields.io/pypi/v/sql2sqlx.svg?logo=pypi&logoColor=white)](https://pypi.org/project/sql2sqlx/)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10+-fcbc2c.svg?logo=python&logoColor=white)](https://www.python.org/downloads/)
 [![Test Ubuntu](https://github.com/neuralsorcerer/sql2sqlx/actions/workflows/test_ubuntu.yml/badge.svg)](https://github.com/neuralsorcerer/sql2sqlx/actions/workflows/test_ubuntu.yml?query=branch%3Amain)
