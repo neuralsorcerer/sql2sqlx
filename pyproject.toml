@@ -1,0 +1,101 @@
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sql2sqlx"
+dynamic = ["version"]
+description = "Convert BigQuery SQL into Dataform SQLX with conservative, dependency-aware migration tooling."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Soumyadip Sarkar", email = "soumyadip@soumyadipsarkar.com" }]
+keywords = [
+  "analytics-engineering",
+  "bigquery",
+  "bigquery-sql",
+  "code-generation",
+  "data-engineering",
+  "dataform",
+  "dataform-sqlx",
+  "ddl",
+  "dependency-graph",
+  "dml",
+  "elt",
+  "etl",
+  "gcp",
+  "google-cloud",
+  "googlesql",
+  "migration",
+  "sql",
+  "sql-converter",
+  "sql-migration",
+  "sql-parser",
+  "sqlx",
+  "warehouse-migration",
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Information Technology",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Programming Language :: SQL",
+  "Topic :: Database",
+  "Topic :: Software Development",
+  "Topic :: Text Processing",
+  "Topic :: Utilities",
+  "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://github.com/neuralsorcerer/sql2sqlx"
+Documentation = "https://neuralsorcerer.github.io/sql2sqlx/"
+Source = "https://github.com/neuralsorcerer/sql2sqlx"
+Issues = "https://github.com/neuralsorcerer/sql2sqlx/issues"
+Changelog = "https://github.com/neuralsorcerer/sql2sqlx/blob/main/CHANGELOG.md"
+
+[project.scripts]
+sql2sqlx = "sql2sqlx.cli:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0", "black[jupyter]>=26.3.1", "isort>=5.13", "mypy>=1.10,<2.0", "pre-commit>=3.5"]
+docs = ["sphinx>=7.0", "furo>=2024.1.29", "myst-parser>=2.0", "myst-nb>=1.1"]
+examples = ["jupyter>=1.0", "matplotlib>=3.8"]
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+sql2sqlx = ["py.typed"]
+
+[tool.setuptools.dynamic]
+version = { attr = "sql2sqlx.version.__version__" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+pythonpath = ["src"]
+
+[tool.black]
+line-length = 100
+target-version = ["py312"]
+
+[tool.isort]
+profile = "black"
+line_length = 100
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src/sql2sqlx"]

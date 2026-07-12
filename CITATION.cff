@@ -1,0 +1,14 @@
+# This CITATION.cff file was generated with cffinit.
+# Visit https://bit.ly/cffinit to generate yours today!
+cff-version: 1.2.0
+title: >-
+  sql2sqlx: Conservative BigQuery SQL to Dataform SQLX migration tooling
+message: >-
+  If you use this software, please cite it using the metadata from this file.
+type: software
+authors:
+  - given-names: Soumyadip
+    family-names: Sarkar
+repository-code: 'https://github.com/neuralsorcerer/sql2sqlx'
+url: 'https://neuralsorcerer.github.io/sql2sqlx/'
+license: Apache-2.0

@@ -1,0 +1,21 @@
+repos:
+  - repo: https://github.com/psf/black
+    rev: 26.5.1
+    hooks:
+      - id: black
+        types_or: [python, pyi, jupyter]
+        additional_dependencies: ["black[jupyter]"]
+
+  - repo: https://github.com/pycqa/isort
+    rev: 9.0.0a3
+    hooks:
+      - id: isort
+        args: ["--profile", "black"]
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v2.2.0
+    hooks:
+      - id: mypy
+        pass_filenames: false
+        args: ["--config-file", "pyproject.toml"]
+        additional_dependencies: []
