@@ -37,6 +37,7 @@ autodoc_typehints = "description"
 napoleon_google_docstring = True
 napoleon_numpy_docstring = False
 myst_enable_extensions = ["colon_fence", "deflist"]
+myst_heading_anchors = 3
 nb_execution_mode = "off"
 nb_execution_timeout = 120
 
