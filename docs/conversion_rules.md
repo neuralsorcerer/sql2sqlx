@@ -34,9 +34,12 @@ are wired, see the [dependency model](dependencies.md).
 | `UPDATE` / `DELETE` / `TRUNCATE` | `operations` | Write target tracked for dependency chaining. |
 | `DROP` / `ALTER` (table/view) | `operations` | Write target tracked. |
 | `LOAD DATA INTO/OVERWRITE` | `operations` | Write target tracked. |
+| `CREATE` / `DROP` / `ALTER SEARCH`\|`VECTOR INDEX ... ON t` | `operations` | Kept verbatim; the affected table `t` is parsed from the `ON` clause and tracked as a write target so the DDL is ordered after `t` and after earlier mutations of `t` (`INDEX_DDL`). Never elected as `t`'s owner. |
+| `CREATE` / `DROP ROW ACCESS POLICY ... ON t`, `DROP ALL ROW ACCESS POLICIES ON t` | `operations` | Same handling as index DDL (`ROW_ACCESS_POLICY_DDL`); table reads inside a `FILTER USING (...)` subquery are still rewritten to `${ref(...)}`. |
+| `GRANT` / `REVOKE ... ON TABLE`\|`VIEW`\|`EXTERNAL TABLE ... t` | `operations` | Table-scoped grants track `t` as a write target so they are ordered after it (`GRANT_REVOKE_DCL`). Grants on non-table resources (e.g. `ON SCHEMA`) have no table action and stay standalone. |
 | Bare `SELECT` / `WITH` | `operations` + `ORPHAN_SELECT` | Review: table, view or assertion? |
 | File requiring shared script context | one whole-file `operations` action | Transactions, temporary objects, variables, procedural blocks and dynamic side effects stay together (`SCRIPT_FILE`). |
-| Everything else (`GRANT`, `CALL`, `EXPORT DATA`, procedures, ...) | `operations` | Verbatim. |
+| Everything else (`CALL`, `EXPORT DATA`, procedures, ...) | `operations` | Verbatim. |
 
 ### Worked example: `CREATE ... AS` with metadata
 
@@ -252,6 +255,14 @@ These rules are summarized here and covered in depth, with examples, in the
   producer; `--declare-external` can declare an existing ownerless target.
 - Duplicate producers of one target are demoted to ordered verbatim
   operations (`DUPLICATE_TARGET`) - Dataform allows one owner per target.
+  Demotion also drops the abandoned typed-conversion warnings (for example
+  `INSERT_INCREMENTAL`) so the report describes the operations action that
+  was actually emitted.
+- Resource-attached DDL/DCL (`CREATE/DROP/ALTER SEARCH|VECTOR INDEX`,
+  `CREATE/DROP ROW ACCESS POLICY`, table-scoped `GRANT`/`REVOKE`) is kept
+  verbatim but tracked as a writer of the affected table, so it is ordered
+  after that table's creator and after earlier mutations of the same table.
+  Such statements are never elected as the table's owner.
 - CTE names, table aliases (including `alias.column` paths), `UNNEST`,
   table-valued functions, `EXTRACT(... FROM ...)` and the statement's own
   target are never rewritten.
@@ -275,6 +286,8 @@ JSON shape and a triage workflow.
 | `FALLBACK_SELECT_ALIAS` | Column-list rewrite not provably safe |
 | `COLUMN_DDL` | CTAS with typed column list |
 | `TEMP_TABLE` / `EXTERNAL_TABLE` / `SNAPSHOT_TABLE` | Special CREATE forms kept as operations |
+| `INDEX_DDL` / `ROW_ACCESS_POLICY_DDL` | Index or row-access-policy DDL kept verbatim and ordered after its `ON` table |
+| `GRANT_REVOKE_DCL` | Table-scoped `GRANT`/`REVOKE` kept verbatim and ordered after its table |
 | `IF_NOT_EXISTS` | Create-if-absent guard lost (or preserved per option) |
 | `CREATE_REPLACE_SEMANTICS` | Typed Dataform action rebuilds a non-`OR REPLACE` target on later runs |
 | `CREATE_NO_AS` | Plain CREATE TABLE kept as operations |

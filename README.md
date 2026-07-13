@@ -367,6 +367,9 @@ Dataform cannot represent the original statement without changing semantics.
 | `CREATE SNAPSHOT TABLE` | `operations` | Preserved verbatim. |
 | `CREATE TABLE ... LIKE/CLONE/COPY` | `operations` | No typed Dataform equivalent. |
 | `UPDATE`, `DELETE`, `TRUNCATE`, `DROP`, `ALTER`, `LOAD DATA` | `operations` | Write targets are still tracked for dependency ordering. |
+| `CREATE/DROP/ALTER SEARCH\|VECTOR INDEX ... ON t` | `operations` | Kept verbatim but ordered after `t` (and after earlier mutations of `t`). |
+| `CREATE/DROP ROW ACCESS POLICY ... ON t`, `DROP ALL ROW ACCESS POLICIES ON t` | `operations` | Kept verbatim but ordered after `t`. |
+| `GRANT`/`REVOKE ... ON TABLE\|VIEW ... t` | `operations` | Table-scoped grants are ordered after `t`; grants on other resources (e.g. a schema) stay standalone. |
 | Standalone `SELECT` or `WITH` | `operations` | Reported with `ORPHAN_SELECT` for manual review. |
 | Scripts using variables, transactions, temp objects, dynamic SQL, calls, or procedural control flow | one script `operations` action | Keeps shared BigQuery context intact. |
 | Anything unsupported or unknown | `operations` | Original SQL is preserved and warning codes explain why. |
@@ -503,6 +506,9 @@ Important warning categories include:
 | `MERGE_INCREMENTAL` | A safe MERGE shape was converted to incremental. |
 | `TARGET_SCHEMA_REQUIRED` | Converted incremental logic assumes target schema compatibility. |
 | `DUPLICATE_TARGET` | A later producer was demoted because the target already had an owner. |
+| `INDEX_DDL` | Search/vector index DDL kept verbatim and ordered after its table. |
+| `ROW_ACCESS_POLICY_DDL` | Row-access-policy DDL kept verbatim and ordered after its table. |
+| `GRANT_REVOKE_DCL` | A table-scoped `GRANT`/`REVOKE` kept verbatim and ordered after its table. |
 | `ORDER_ASSUMED` | Multiple files write the same table; sorted-path order was used. |
 | `SELF_REFERENCE` | A defining query reads its own target and was left literal. |
 | `FUTURE_CREATOR` | A ref was not generated because the owner appears later in corpus order. |

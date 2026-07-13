@@ -472,3 +472,143 @@ def test_tags_and_no_annotate():
     f = by_name(r, "t")
     assert 'tags: ["migrated", "batch1"]' in f.content
     assert "-- source:" not in f.content
+
+
+# ---------------------------------------------------------------------------
+# Resource-attached DDL/DCL: index / row-access policy / GRANT / REVOKE
+# ---------------------------------------------------------------------------
+
+
+def test_search_index_depends_on_its_table():
+    r = conv(
+        "CREATE TABLE d.docs AS SELECT 'x' AS body;\n"
+        "CREATE SEARCH INDEX idx ON d.docs(ALL COLUMNS);"
+    )
+    idx = by_name(r, "docs_create")
+    assert idx.action_type.value == "operations"
+    # Statement kept verbatim (target left literal, not a ref/self output).
+    assert "CREATE SEARCH INDEX idx ON d.docs(ALL COLUMNS)" in idx.content
+    assert "hasOutput" not in idx.content
+    assert "${self()}" not in idx.content
+    # ... but ordered after its table via an explicit dependency.
+    assert 'dependencies: ["d.docs"]' in idx.content
+    assert "INDEX_DDL" in codes(r)
+
+
+def test_vector_index_depends_on_its_table():
+    r = conv(
+        "CREATE TABLE d.docs AS SELECT [0.1] AS embedding;\n"
+        "CREATE VECTOR INDEX v ON d.docs(embedding) OPTIONS(index_type='IVF');"
+    )
+    idx = by_name(r, "docs_create")
+    assert 'dependencies: ["d.docs"]' in idx.content
+    assert "CREATE VECTOR INDEX v ON d.docs(embedding)" in idx.content
+    assert "hasOutput" not in idx.content
+
+
+def test_row_access_policy_depends_and_rewrites_filter_reads():
+    r = conv(
+        "CREATE TABLE d.t AS SELECT 'us' AS region;\n"
+        "CREATE TABLE d.allowed AS SELECT 'us' AS region;\n"
+        "CREATE ROW ACCESS POLICY p ON d.t\n"
+        "GRANT TO ('group:x') FILTER USING (region IN (SELECT region FROM d.allowed));"
+    )
+    pol = by_name(r, "t_create")
+    # The ON target is an explicit dependency (left literal in the DDL).
+    assert 'dependencies: ["d.t"]' in pol.content
+    assert "CREATE ROW ACCESS POLICY p ON d.t" in pol.content
+    # A table read inside the FILTER subquery is still rewritten to ref(),
+    # which supplies the dependency on d.allowed implicitly.
+    assert '${ref("d", "allowed")}' in pol.content
+    assert "ROW_ACCESS_POLICY_DDL" in codes(r)
+
+
+def test_grant_and_revoke_on_table_depend_on_it():
+    r = conv(
+        "CREATE TABLE d.t AS SELECT 1 AS x;\n"
+        "GRANT `roles/bigquery.dataViewer` ON TABLE d.t TO 'user:a@b.com';\n"
+        "REVOKE `roles/bigquery.dataViewer` ON TABLE d.t FROM 'user:a@b.com';"
+    )
+    grant = by_name(r, "t_grant")
+    assert grant.action_type.value == "operations"
+    assert 'dependencies: ["d.t"]' in grant.content
+    assert "GRANT `roles/bigquery.dataViewer` ON TABLE d.t" in grant.content
+    # The revoke follows the grant in source order (writer chain).
+    revoke = by_name(r, "t_revoke")
+    assert 'dependencies: ["t_grant"]' in revoke.content
+    assert codes(r).issuperset({"GRANT_REVOKE_DCL"})
+
+
+def test_grant_on_schema_infers_no_table_dependency():
+    r = conv("GRANT `roles/bigquery.dataViewer` ON SCHEMA d TO 'user:a@b.com';")
+    assert len(r.files) == 1
+    f = r.files[0]
+    assert f.action_type.value == "operations"
+    assert "dependencies" not in f.content
+    assert "GRANT_REVOKE_DCL" not in codes(r)
+
+
+def test_drop_and_alter_index_and_policy_depend_on_table():
+    r = conv(
+        "CREATE TABLE d.t AS SELECT 1 AS x;\n"
+        "DROP SEARCH INDEX idx ON d.t;\n"
+        "ALTER VECTOR INDEX v ON d.t REBUILD;\n"
+        "DROP ROW ACCESS POLICY p ON d.t;\n"
+        "DROP ALL ROW ACCESS POLICIES ON d.t;"
+    )
+    # Every metadata mutation is serialized after the base table in source
+    # order, each depending on its immediate predecessor.
+    drop_index = by_name(r, "t_drop")
+    assert 'dependencies: ["d.t"]' in drop_index.content
+    alter_index = by_name(r, "t_alter")
+    assert 'dependencies: ["t_drop"]' in alter_index.content
+    drop_policy = by_name(r, "t_drop_2")
+    assert 'dependencies: ["t_alter"]' in drop_policy.content
+    drop_all = by_name(r, "t_drop_3")
+    assert 'dependencies: ["t_drop_2"]' in drop_all.content
+    assert {"INDEX_DDL", "ROW_ACCESS_POLICY_DDL"} <= codes(r)
+
+
+def test_multiple_metadata_mutations_are_ordered_in_source_order():
+    r = conv(
+        "CREATE TABLE d.t AS SELECT 1 AS x;\n"
+        "CREATE SEARCH INDEX a ON d.t(ALL COLUMNS);\n"
+        "CREATE ROW ACCESS POLICY b ON d.t GRANT TO ('group:x') FILTER USING (TRUE);"
+    )
+    index = by_name(r, "t_create")
+    assert 'dependencies: ["d.t"]' in index.content
+    policy = by_name(r, "t_create_2")
+    assert 'dependencies: ["t_create"]' in policy.content
+
+
+def test_index_on_ownerless_table_is_not_elected_as_owner():
+    # The base table is never created in the corpus (external/managed
+    # elsewhere); the search index must not become its Dataform owner.
+    r = conv("CREATE SEARCH INDEX idx ON d.ext(ALL COLUMNS);")
+    assert len(r.files) == 1
+    f = r.files[0]
+    assert f.action_type.value == "operations"
+    assert "hasOutput" not in f.content
+    assert 'schema: "d"' not in f.content  # not emitted as the table's owner
+    assert "CREATE SEARCH INDEX idx ON d.ext(ALL COLUMNS)" in f.content
+
+
+def test_unparseable_on_target_warns_and_stays_operations():
+    r = conv("CREATE SEARCH INDEX idx ON;")
+    assert len(r.files) == 1
+    assert r.files[0].action_type.value == "operations"
+    assert "FALLBACK_OPERATIONS" in codes(r)
+
+
+def test_demotion_drops_stale_typed_conversion_warning():
+    r = conv(
+        "CREATE OR REPLACE TABLE d.events AS SELECT 1 AS id, 'a' AS name;\n"
+        "INSERT INTO d.events SELECT id, name FROM d.staging;",
+        insert_strategy=InsertStrategy.INCREMENTAL,
+    )
+    demoted = by_name(r, "events_insert")
+    assert demoted.action_type.value == "operations"
+    # The demotion is reported, but the abandoned "converted to incremental"
+    # claim is gone - it no longer describes the emitted operations action.
+    assert "DUPLICATE_TARGET" in codes(r)
+    assert "INSERT_INCREMENTAL" not in codes(r)

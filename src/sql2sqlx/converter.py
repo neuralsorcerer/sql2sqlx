@@ -90,6 +90,23 @@ _ELECTABLE = frozenset(
     }
 )
 
+#: Warning codes that assert a typed (table/view/incremental/declaration)
+#: conversion. When a duplicate creator is demoted back to a verbatim
+#: ``operations`` action those claims no longer describe the emitted SQLX, so
+#: they are dropped in :meth:`_Linker._demote` to keep the report consistent
+#: with the output (a stale ``INSERT_INCREMENTAL`` beside ``DUPLICATE_TARGET``
+#: would otherwise say the action is incremental when it is now operations).
+_TYPED_CONVERSION_WARNINGS = frozenset(
+    {
+        "INSERT_INCREMENTAL",
+        "MERGE_INCREMENTAL",
+        "TARGET_SCHEMA_REQUIRED",
+        "CREATE_REPLACE_SEMANTICS",
+        "IF_NOT_EXISTS",
+        "DECLARATION_DROPPED_DDL",
+    }
+)
+
 # Statement heads that require BigQuery's shared script context. RETURN ends
 # the script, while ASSERT is an execution guard whose failure must prevent
 # later statements from running; splitting either into independent Dataform
@@ -735,6 +752,10 @@ class _Linker:
         d.body_end = d.stmt_end
         d.edits = []
         d.config = {}
+        # The abandoned typed conversion's warnings (e.g. "converted to
+        # incremental") no longer describe the emitted operations action;
+        # drop them so the report matches what was actually generated.
+        d.warnings = [w for w in d.warnings if w[0] not in _TYPED_CONVERSION_WARNINGS]
 
     def _build_chains(self) -> None:
         """Group creators and writers per table, in corpus order."""

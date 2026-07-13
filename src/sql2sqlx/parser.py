@@ -33,6 +33,10 @@ Statement                             Result
 ``CREATE TABLE`` (no ``AS``)          ``operations`` (or ``declaration``)
 UPDATE/DELETE/TRUNCATE/DROP/ALTER/    ``operations`` with write-target
 LOAD                                  tracking for dependency chaining
+``CREATE/DROP/ALTER SEARCH|VECTOR``   ``operations`` tracked as a writer of
+``INDEX``, ``ROW ACCESS POLICY``      the ``ON`` table (ordered after it,
+DDL, table-scoped ``GRANT``/          never elected as its owner)
+``REVOKE``
 everything else                       ``operations``
 ====================================  =======================================
 
@@ -900,6 +904,193 @@ def _append_table_ref(draft: ActionDraft, toks: Sequence[Token], i: int) -> None
 
 
 # ---------------------------------------------------------------------------
+# Resource-attached DDL/DCL (index, row-access policy, GRANT/REVOKE)
+# ---------------------------------------------------------------------------
+#
+# Statements such as ``CREATE SEARCH INDEX ... ON t``, ``CREATE VECTOR INDEX
+# ... ON t``, ``CREATE ROW ACCESS POLICY ... ON t`` and ``GRANT ... ON TABLE
+# t`` operate on a table that must already exist. They have no typed Dataform
+# equivalent, so they stay verbatim as ``operations`` - but, unlike a
+# free-standing operation, they are recorded as *writers* of the affected
+# table. That makes the linker order them after the table's creator, and after
+# any earlier metadata mutation of the same table in source order, without ever
+# electing them as the target's owner: their statement kinds are deliberately
+# outside the emitter's ``_ELECTABLE`` set and they carry no
+# ``primary_target_span``, so hasOutput election and ``${self()}`` rewriting
+# can never apply to them.
+
+
+def _find_top_level_on(toks: Sequence[Token], start: int) -> Optional[int]:
+    """Index of the first ``ON`` keyword at paren/bracket depth 0, or ``None``."""
+    depth = 0
+    for i in range(start, len(toks)):
+        t = toks[i]
+        if t.kind == EOF:
+            break
+        if t.kind == OP:
+            if t.text in ("(", "["):
+                depth += 1
+            elif t.text in (")", "]"):
+                depth = max(0, depth - 1)
+        elif depth == 0 and t.kind == IDENT and t.upper == "ON":
+            return i
+    return None
+
+
+def _skip_dcl_resource_type(toks: Sequence[Token], j: int) -> Optional[int]:
+    """Skip a ``GRANT``/``REVOKE`` ``ON`` resource-type keyword.
+
+    Returns the index of the resource name for table-like resource types
+    (``TABLE``, ``VIEW``, ``EXTERNAL TABLE``, ``MATERIALIZED VIEW`` and
+    ``SNAPSHOT TABLE``), or ``None`` for resources that are not Dataform
+    table actions (``SCHEMA`` and the like).
+    """
+    kw = _kw(toks, j)
+    if kw == "EXTERNAL" and _kw(toks, j + 1) == "TABLE":
+        return j + 2
+    if kw == "MATERIALIZED" and _kw(toks, j + 1) == "VIEW":
+        return j + 2
+    if kw == "SNAPSHOT" and _kw(toks, j + 1) == "TABLE":
+        return j + 2
+    if kw in ("TABLE", "VIEW"):
+        return j + 1
+    return None
+
+
+def _attached_target(toks: Sequence[Token], start: int, dcl_typed: bool) -> Optional[TableName]:
+    """Parse the table an ``ON``-attached statement operates on.
+
+    Args:
+        toks: Statement tokens (EOF-terminated).
+        start: Index to begin scanning for the ``ON`` clause.
+        dcl_typed: When ``True`` the ``ON`` clause names a resource type
+            (``GRANT``/``REVOKE`` DCL); otherwise ``ON`` is followed
+            directly by the table path (index / row-access-policy DDL).
+
+    Returns:
+        The affected :class:`TableName`, or ``None`` when no table-scoped
+        ``ON`` target can be parsed.
+    """
+    on_index = _find_top_level_on(toks, start)
+    if on_index is None:
+        return None
+    j = on_index + 1
+    if dcl_typed:
+        skipped = _skip_dcl_resource_type(toks, j)
+        if skipped is None:
+            return None
+        j = skipped
+    pm = parse_table_path(toks, j)
+    if pm is None or not (1 <= len(pm.parts) <= 3) or not all(pm.parts):
+        return None
+    return TableName.from_parts(list(pm.parts))
+
+
+def _classify_attached_ddl(
+    stmt: RawStatement,
+    toks: List[Token],
+    kind: str,
+    start: int,
+    warn_code: str,
+) -> ActionDraft:
+    """Classify index / row-access-policy DDL attached to an existing table.
+
+    The statement is preserved verbatim. When its ``ON`` table can be
+    identified it becomes a writer of that table (dependency + source
+    ordering, never ownership); otherwise it is kept as a plain operation
+    with a warning that no table dependency could be inferred.
+    """
+    head = toks[0].upper if toks and toks[0].kind == IDENT else ""
+    target = _attached_target(toks, start, dcl_typed=False)
+    if target is None:
+        draft = _ops_draft(
+            stmt,
+            kind,
+            warnings=[
+                (
+                    "FALLBACK_OPERATIONS",
+                    f"{kind} kept as operations, but its target table could not "
+                    "be parsed from the ON clause; no dependency on that table "
+                    "was inferred, so review manual dependencies.",
+                    stmt.start,
+                )
+            ],
+        )
+        return _finish(draft, toks, head)
+    draft = _ops_draft(
+        stmt,
+        kind,
+        target=target,
+        writes=True,
+        warnings=[
+            (
+                warn_code,
+                f"{kind} on {target.display()} kept as operations and ordered "
+                "after that table; Dataform runs the DDL verbatim.",
+                stmt.start,
+            )
+        ],
+    )
+    return _finish(draft, toks, head)
+
+
+def _classify_attached_drop_alter(
+    stmt: RawStatement, toks: List[Token], head: str, ent: str
+) -> Optional[ActionDraft]:
+    """Handle index / row-access-policy DROP and ALTER forms, if matched.
+
+    Returns ``None`` when the statement is not a resource-attached form, so
+    the caller falls back to ordinary DROP/ALTER table handling.
+    """
+    if ent in ("SEARCH", "VECTOR") and _kw(toks, 2) == "INDEX":
+        label = "SEARCH INDEX" if ent == "SEARCH" else "VECTOR INDEX"
+        return _classify_attached_ddl(stmt, toks, f"{head} {label}", 3, "INDEX_DDL")
+    if head == "DROP":
+        if ent == "ROW" and _kw(toks, 2) == "ACCESS" and _kw(toks, 3) == "POLICY":
+            return _classify_attached_ddl(
+                stmt, toks, "DROP ROW ACCESS POLICY", 4, "ROW_ACCESS_POLICY_DDL"
+            )
+        if (
+            ent == "ALL"
+            and _kw(toks, 2) == "ROW"
+            and _kw(toks, 3) == "ACCESS"
+            and _kw(toks, 4) == "POLICIES"
+        ):
+            return _classify_attached_ddl(
+                stmt, toks, "DROP ALL ROW ACCESS POLICIES", 5, "ROW_ACCESS_POLICY_DDL"
+            )
+    return None
+
+
+def _classify_grant_revoke(stmt: RawStatement, toks: List[Token], head: str) -> ActionDraft:
+    """Classify a ``GRANT``/``REVOKE`` DCL statement.
+
+    When the grant targets a table-like resource the statement is recorded
+    as a writer of that table so the linker orders it after the table's
+    creator. Grants on other resources (a schema, for example) have no
+    Dataform table action to depend on and are kept as plain operations.
+    """
+    target = _attached_target(toks, 1, dcl_typed=True)
+    if target is None:
+        return _finish(_ops_draft(stmt, head), toks, head)
+    draft = _ops_draft(
+        stmt,
+        head,
+        target=target,
+        writes=True,
+        warnings=[
+            (
+                "GRANT_REVOKE_DCL",
+                f"{head} on {target.display()} kept as operations and ordered "
+                "after that table; Dataform applies the access change verbatim.",
+                stmt.start,
+            )
+        ],
+    )
+    return _finish(draft, toks, head)
+
+
+# ---------------------------------------------------------------------------
 # Top-level dispatcher
 # ---------------------------------------------------------------------------
 
@@ -928,6 +1119,8 @@ def classify_statement(stmt: RawStatement, text: str, opts: ConversionOptions) -
         return _classify_merge(stmt, toks, text, opts)
     if head in ("UPDATE", "DELETE", "TRUNCATE", "DROP", "ALTER", "LOAD"):
         return _classify_dml(stmt, toks, head)
+    if head in ("GRANT", "REVOKE"):
+        return _classify_grant_revoke(stmt, toks, head)
     if head == "CALL" or (head == "EXECUTE" and _kw(toks, 1) == "IMMEDIATE"):
         draft = _ops_draft(
             stmt,
@@ -1005,6 +1198,13 @@ def _classify_create(
                     stmt.start,
                 )
             ],
+        )
+    if entity in ("SEARCH", "VECTOR") and _kw(toks, i + 1) == "INDEX":
+        label = "SEARCH INDEX" if entity == "SEARCH" else "VECTOR INDEX"
+        return _classify_attached_ddl(stmt, toks, f"CREATE {label}", i + 2, "INDEX_DDL")
+    if entity == "ROW" and _kw(toks, i + 1) == "ACCESS" and _kw(toks, i + 2) == "POLICY":
+        return _classify_attached_ddl(
+            stmt, toks, "CREATE ROW ACCESS POLICY", i + 3, "ROW_ACCESS_POLICY_DDL"
         )
     if entity not in ("TABLE", "VIEW"):
         kind = f"CREATE {entity}" if entity else "CREATE"
@@ -2123,6 +2323,9 @@ def _classify_drop_alter(stmt: RawStatement, toks: List[Token], head: str) -> Ac
     """Classify DROP/ALTER, extracting the table/view target when present."""
     i = 1
     ent = _kw(toks, i)
+    special = _classify_attached_drop_alter(stmt, toks, head, ent)
+    if special is not None:
+        return special
     if ent in ("MATERIALIZED", "EXTERNAL", "SNAPSHOT"):
         nxt = _kw(toks, i + 1)
         if (ent == "MATERIALIZED" and nxt == "VIEW") or (
