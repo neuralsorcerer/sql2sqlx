@@ -18,7 +18,7 @@ import enum
 import hashlib
 import re
 from dataclasses import dataclass, field
-from pathlib import PurePath
+from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any, Dict, List, Optional, Tuple
 
 # ---------------------------------------------------------------------------
@@ -242,8 +242,13 @@ class ConversionOptions:
             raise ValueError(f"encoding is not a text codec: {self.encoding!r}")
         if not isinstance(self.include_glob, str) or not self.include_glob:
             raise ValueError("include_glob must not be empty")
-        glob_path = PurePath(self.include_glob)
-        if glob_path.is_absolute() or ".." in glob_path.parts:
+        # Validate both path syntaxes rather than the host's syntax only.
+        # A root-relative Windows path (for example ``/etc/passwd``) has an
+        # anchor but no drive and therefore is not considered ``absolute`` by
+        # ``PureWindowsPath``.  ``Path.rglob`` still rejects it, so checking
+        # each flavor's anchor prevents a platform-dependent runtime error.
+        glob_paths = (PurePosixPath(self.include_glob), PureWindowsPath(self.include_glob))
+        if any(path.anchor or ".." in path.parts for path in glob_paths):
             raise ValueError("include_glob must stay within the input directory")
 
 

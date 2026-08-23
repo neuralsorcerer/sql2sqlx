@@ -57,6 +57,8 @@ def test_invalid_runtime_options_are_rejected(tmp_path: Path) -> None:
     _usage_error([src, "-o", out, "--encoding", "base64_codec"])  # not a text codec
     _usage_error([src, "-o", out, "--include", "/etc/passwd"])
     _usage_error([src, "-o", out, "--include", "../*.sql"])
+    _usage_error([src, "-o", out, "--include", r"C:\Windows\*.sql"])
+    _usage_error([src, "-o", out, "--include", r"..\*.sql"])
 
 
 def test_missing_input_path_is_a_usage_error(tmp_path: Path) -> None:

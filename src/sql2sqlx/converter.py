@@ -1311,12 +1311,27 @@ def write_result(result: ConversionResult, output_dir: str) -> None:
         output_dir: Destination root (created if missing).
 
     Raises:
-        ConversionError: If a generated relative path would escape the
-            destination (including through an existing symlink).
+        ConversionError: If a generated path is not a canonical relative
+            POSIX path, would escape the destination (including through an
+            existing symlink), or collides with another generated path.
     """
     out_root = Path(output_dir).resolve()
     destinations: List[Tuple[Path, SqlxFile]] = []
+    seen_destinations: Set[Path] = set()
     for sqlx in result.files:
+        relpath = PurePosixPath(sqlx.relpath)
+        if (
+            not sqlx.relpath
+            or relpath.is_absolute()
+            or "." in relpath.parts
+            or ".." in relpath.parts
+            or relpath.as_posix() != sqlx.relpath
+            or "\\" in sqlx.relpath
+        ):
+            raise ConversionError(
+                "generated output path escapes the destination or is not a canonical relative "
+                f"path: {sqlx.relpath!r}"
+            )
         dest = (out_root / sqlx.relpath).resolve()
         try:
             dest.relative_to(out_root)
@@ -1324,6 +1339,9 @@ def write_result(result: ConversionResult, output_dir: str) -> None:
             raise ConversionError(
                 f"generated output path escapes the destination: {sqlx.relpath!r}"
             ) from None
+        if dest in seen_destinations:
+            raise ConversionError(f"generated output paths collide at: {sqlx.relpath!r}")
+        seen_destinations.add(dest)
         destinations.append((dest, sqlx))
     for dest, sqlx in destinations:
         dest.parent.mkdir(parents=True, exist_ok=True)

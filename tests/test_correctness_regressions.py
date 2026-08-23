@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 from sql2sqlx import (
+    ActionType,
     ConversionOptions,
     IfNotExistsStrategy,
     InsertStrategy,
@@ -30,7 +31,7 @@ from sql2sqlx import (
 )
 from sql2sqlx.errors import ConversionError
 from sql2sqlx.lexer import EOF, NUMBER, PARAM, LexError, tokenize, unquote_identifier
-from sql2sqlx.model import sanitize_filename
+from sql2sqlx.model import ConversionReport, ConversionResult, SqlxFile, sanitize_filename
 from sql2sqlx.refs import parse_table_path, scan_ref_sites
 from sql2sqlx.splitter import split_statements
 
@@ -55,6 +56,34 @@ def _by_name(result: object, name: str) -> object:
         if file.action_name == name:
             return file
     raise AssertionError(f"missing action {name!r}")
+
+
+def _synthetic_result(*relpaths: str) -> ConversionResult:
+    """Build a minimal result for exercising the public output writer."""
+    return ConversionResult(
+        files=[
+            SqlxFile(path, 'config { type: "operations" }\n', ActionType.OPERATIONS, "test")
+            for path in relpaths
+        ],
+        report=ConversionReport(),
+    )
+
+
+@pytest.mark.parametrize(
+    "relpath",
+    ["", "/absolute.sqlx", "../escape.sqlx", "nested/../alias.sqlx", "nested\\file.sqlx"],
+)
+def test_write_result_rejects_noncanonical_paths(tmp_path: Path, relpath: str) -> None:
+    with pytest.raises(ConversionError, match="canonical relative path"):
+        write_result(_synthetic_result(relpath), str(tmp_path / "out"))
+    assert not (tmp_path / "out").exists()
+
+
+def test_write_result_rejects_destination_collisions_before_writing(tmp_path: Path) -> None:
+    result = _synthetic_result("same.sqlx", "same.sqlx")
+    with pytest.raises(ConversionError, match="collide"):
+        write_result(result, str(tmp_path / "out"))
+    assert not (tmp_path / "out").exists()
 
 
 def test_lexer_enforces_raw_and_newline_backslash_rules() -> None:
