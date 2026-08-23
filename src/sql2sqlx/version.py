@@ -12,4 +12,4 @@ without circular-import risk, and so packaging tools can read it
 statically.
 """
 
-__version__ = "0.1.2"
+__version__ = "0.1.3"

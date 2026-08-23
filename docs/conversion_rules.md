@@ -301,6 +301,7 @@ JSON shape and a triage workflow.
 | `DYNAMIC_SIDE_EFFECTS` | `CALL` or dynamic SQL may need manually declared dependencies |
 | `ORPHAN_SELECT` | Standalone query needs review |
 | `SCRIPT_FILE` / `SCRIPT_WRITES` | Whole-file script preserved; targets it writes |
+| `COMMENT_DROPPED` | A comment sat outside the query body a typed action emits (DDL prefix, or a converted MERGE's `WHEN` clauses) and is not in the output |
 | `SELF_REFERENCE` | Statement reads its own target; left literal |
 | `DUPLICATE_TARGET` | Second producer demoted to operations |
 | `ORDER_ASSUMED` | Multi-file writer order inferred from sorted paths |

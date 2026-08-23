@@ -618,6 +618,7 @@ class _Linker:
         self._next_suffix: Dict[str, int] = {}
         self._next_path_suffix: Dict[str, int] = {}
         self._line_cache: Dict[str, LineIndex] = {}
+        self._comment_start_cache: Dict[str, List[int]] = {}
         self._unresolved: Set[str] = set()
         self._order_index = {id(d): i for i, (_f, d) in enumerate(self.ordered)}
         self._dependency_graph: Dict[int, Set[int]] = {}
@@ -655,6 +656,32 @@ class _Linker:
     def _comments(self, f: ParsedFile) -> List[Tuple[int, int]]:
         """Comment spans captured during the file's single lexing pass."""
         return f.comment_spans
+
+    def _comment_starts(self, f: ParsedFile) -> List[int]:
+        """Cached start offsets of ``f``'s comments, for binary search.
+
+        Comment spans arrive in source order and never overlap, so a
+        ``bisect`` on this list bounds every comment lookup to the comments
+        actually inside the requested window. Scanning the whole list per
+        draft instead is quadratic in the number of commented statements.
+        """
+        starts = self._comment_start_cache.get(f.relpath)
+        if starts is None:
+            starts = [start for start, _end in f.comment_spans]
+            self._comment_start_cache[f.relpath] = starts
+        return starts
+
+    def _comments_between(self, f: ParsedFile, start: int, end: int) -> List[Tuple[int, int]]:
+        """Return the comments wholly contained in ``[start, end]``."""
+        spans = self._comments(f)
+        found: List[Tuple[int, int]] = []
+        for index in range(bisect.bisect_left(self._comment_starts(f), start), len(spans)):
+            span_start, span_end = spans[index]
+            if span_start >= end:
+                break
+            if span_end <= end:
+                found.append((span_start, span_end))
+        return found
 
     def _add_dependency_edge(
         self, f: ParsedFile, d: ActionDraft, dependency: ActionDraft, reason: str
@@ -910,6 +937,35 @@ class _Linker:
         # expressions, not standalone relations that Dataform can declare.
         return not any(marker in name.table for marker in ("*", "$", "@"))
 
+    def _warn_dropped_comments(self, f: ParsedFile, d: ActionDraft) -> None:
+        """Report comments a typed conversion could not carry into its output.
+
+        A typed action emits only its query body; the surrounding DDL becomes
+        the ``config`` block, and for a proven MERGE the ``WHEN`` clauses go
+        away entirely. Comments written in those parts of the statement have
+        nowhere to land. Dropping them silently would be the one lossy step
+        the pipeline does not account for, so record where they were and let
+        the operator decide whether they carried intent worth keeping.
+        """
+        if d.action_type is ActionType.DECLARATION:
+            # The dropped DDL is already reported as DECLARATION_DROPPED_DDL.
+            return
+        dropped = self._comments_between(f, d.stmt_start, d.body_start) + self._comments_between(
+            f, d.body_end, d.stmt_end
+        )
+        if not dropped:
+            return
+        d.warnings.append(
+            (
+                "COMMENT_DROPPED",
+                f"{len(dropped)} comment(s) inside this {d.original_kind} sit outside "
+                "the query body that became the action, so they are not present in "
+                "the generated file; the surrounding SQL they annotated is now the "
+                "config block. Review whether they recorded intent worth keeping.",
+                dropped[0][0],
+            )
+        )
+
     def _emit_draft(
         self,
         f: ParsedFile,
@@ -1083,12 +1139,13 @@ class _Linker:
                 f"v{__version__})"
             )
         leading = None
-        spans = [(a, b) for a, b in self._comments(f) if prev_end <= a and b <= d.stmt_start]
+        spans = self._comments_between(f, prev_end, d.stmt_start)
         if spans:
             leading = "\n".join(normalize_sqlx_comment(f.text[a:b]) for a, b in spans)
         trailing = None
         if is_last_in_file:
-            tail_spans = [(a, b) for a, b in self._comments(f) if a >= d.stmt_end]
+            comment_spans = self._comments(f)
+            tail_spans = comment_spans[bisect.bisect_left(self._comment_starts(f), d.stmt_end) :]
             if tail_spans:
                 trailing = "\n".join(normalize_sqlx_comment(f.text[a:b]) for a, b in tail_spans)
         body = None
@@ -1105,11 +1162,10 @@ class _Linker:
                 )
             ]
             comment_edits = []
-            for a, b in self._comments(f):
-                if d.body_start <= a and b <= d.body_end:
-                    normalized = normalize_sqlx_comment(f.text[a:b])
-                    if normalized != f.text[a:b]:
-                        comment_edits.append((a, b, normalized))
+            for a, b in self._comments_between(f, d.body_start, d.body_end):
+                normalized = normalize_sqlx_comment(f.text[a:b])
+                if normalized != f.text[a:b]:
+                    comment_edits.append((a, b, normalized))
             body = apply_edits_escaped(
                 f.text,
                 d.body_start,
@@ -1117,6 +1173,7 @@ class _Linker:
                 d.edits + escape_edits + comment_edits,
             )
         content = build_sqlx(config, body, annotation, leading, trailing)
+        self._warn_dropped_comments(f, d)
 
         stem = sanitize_filename(
             d.target.table if named and d.target is not None else self.names[id(d)]

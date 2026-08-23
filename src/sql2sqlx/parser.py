@@ -707,9 +707,16 @@ def _alias_select_list_edits(
             return None
         infos.append(info)
     changed_aliases = set()
+    renamed_outputs = set()
     for (mode, name, _alias), col in zip(infos, cols):
         if name is not None and name.upper() == col.upper():
             continue  # no edit for this item
+        if name is not None:
+            # A set operation's trailing ORDER BY resolves *only* against the
+            # query's output column names - there is no FROM clause left for a
+            # renamed bare column to fall back to - so every renamed output
+            # name is hazardous once a top-level set operator appears.
+            renamed_outputs.add(name.upper())
         if mode in ("explicit", "implicit") and name is not None:
             # The old alias disappears; later references to it would
             # re-resolve (or break).
@@ -728,7 +735,8 @@ def _alias_select_list_edits(
         list_end = max(item.toks[-1].end for item in items)
         depth = 0
         alias_visible = False
-        for token in toks:
+        set_operation = False
+        for index, token in enumerate(toks):
             if token.start < list_end or token.kind == EOF or token.start >= toks[te].start:
                 continue
             if token.kind == OP:
@@ -754,9 +762,15 @@ def _alias_select_list_edits(
                 and token.kind == IDENT
                 and word in ("LIMIT", "UNION", "INTERSECT", "EXCEPT")
             ):
+                # ``SELECT * EXCEPT (column)`` is a projection modifier of a
+                # following branch, not a set operator.
+                if word != "LIMIT" and not (word == "EXCEPT" and _is_op(toks, index + 1, "(")):
+                    set_operation = True
                 alias_visible = False
                 continue
-            if alias_visible and word in changed_aliases:
+            if alias_visible and (
+                word in changed_aliases or (set_operation and word in renamed_outputs)
+            ):
                 return None
     edits: List[Tuple[int, int, str]] = []
     for it, (_mode, name, alias_tok), col in zip(items, infos, cols):
@@ -1946,6 +1960,18 @@ def _classify_insert(
     config: Dict[str, Any] = {}
     if opts.protect_incrementals:
         config["protected"] = True
+    # Dataform rebuilds an incremental from its query whenever the target does
+    # not exist yet, and additionally on --full-refresh unless the action is
+    # ``protected`` (Dataform Core's shouldWriteIncrementally). Name only the
+    # rebuild triggers this action actually has.
+    rebuild_trigger = (
+        "on its first run" if opts.protect_incrementals else "on first run or --full-refresh"
+    )
+    protection_note = (
+        " protected: true keeps a later --full-refresh from rebuilding it."
+        if opts.protect_incrementals
+        else ""
+    )
     draft = ActionDraft(
         action_type=ActionType.INCREMENTAL,
         target=target,
@@ -1962,12 +1988,12 @@ def _classify_insert(
             (
                 "INSERT_INCREMENTAL",
                 f"INSERT INTO {target.display()} converted to type "
-                '"incremental": on first run or --full-refresh Dataform will '
-                "(re)create the table from this query. Wrap date filters in "
-                "${when(incremental(), ...)} if they should apply only to "
-                "incremental runs. On later runs Dataform projects every "
-                "existing target column by name, so the query output must match "
-                "that target schema.",
+                f'"incremental": {rebuild_trigger} Dataform will '
+                f"(re)create the table from this query.{protection_note} Wrap "
+                "date filters in ${when(incremental(), ...)} if they should "
+                "apply only to incremental runs. On later runs Dataform "
+                "projects every existing target column by name, so the query "
+                "output must match that target schema.",
                 stmt.start,
             )
         ],

@@ -167,6 +167,10 @@ static analysis was conservative:
   `DUPLICATE_TARGET` - ordering/reference decisions to sanity-check.
 - `ORPHAN_SELECT`, `DYNAMIC_SIDE_EFFECTS`, `RERUN_RISK`, `SCRIPT_WRITES` -
   statements whose intent or hidden effects need a human eye.
+- `COMMENT_DROPPED` - a typed action emits only its query body, so a comment
+  written in the surrounding DDL (or in a converted MERGE's `WHEN` clauses)
+  has nowhere to land. The generated SQL is unaffected; check whether the
+  comment recorded intent worth carrying over by hand.
 
 The full meaning of every code lives in the
 [warning code reference](conversion_rules.md#warning-codes).

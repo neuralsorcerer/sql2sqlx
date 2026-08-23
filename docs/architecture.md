@@ -152,16 +152,24 @@ span edits to a slice of the original source text, emits literal `${` and
 SQLX-unsafe comments through constant placeholders (while inserted
 `${ref()}`/`${self()}` stay active), strips one trailing semicolon, and
 attaches the provenance comment plus the statement's own leading comments. The
-result is UTF-8 with `\n` newlines. See [core concepts](concepts.md) for the
-output anatomy.
+result is UTF-8 and is written without newline translation, so the newlines
+sql2sqlx itself emits are `\n` while newlines inside preserved source spans
+survive as they were - a CRLF source keeps CRLF inside its body. See [core
+concepts](concepts.md) for the output anatomy.
 
 ## Performance model
 
-Lexing dominates runtime, and it runs at C speed via the master regex pattern.
-Directory conversion parallelizes Phase 1 across a `ProcessPoolExecutor` sized
-by `--jobs` (`0` = one worker per CPU); Phase 2 and Phase 3 are a fast
-single-process metadata pass. Because parsing is embarrassingly parallel and
-linking is cheap, throughput scales with core count on large corpora.
+Phase 1 is the larger share of runtime and is the part that parallelizes:
+directory conversion spreads it across a `ProcessPoolExecutor` sized by
+`--jobs` (`0` = one worker per CPU). Within Phase 1 no single stage dominates -
+profiling the benchmark corpus puts lexing and statement classification at
+roughly a third of total runtime each (reference scanning being the bulk of
+classification), and splitting well under a tenth. Phases 2 and 3 are a
+single-process metadata pass and account for the remaining quarter or so,
+nearly all of it emission. That serial share is what bounds the parallel
+speedup rather than it growing with core count indefinitely - measured at
+about 2x on four cores, which is what Amdahl's law predicts from this split.
+Both shares shift with corpus shape, so profile your own if it matters.
 
 Measured on this package's benchmark (`examples/06_benchmark.py`, 120 files /
 1,056,600 lines / 31.7 MB, single core): **43.8 s ~ 24,100 lines/s**, with

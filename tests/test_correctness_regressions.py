@@ -43,6 +43,13 @@ def _codes(result: object) -> set[str]:
     return {warning.code for warning in result.report.warnings}  # type: ignore[attr-defined]
 
 
+def _warning(result: object, code: str) -> object:
+    for warning in result.report.warnings:  # type: ignore[attr-defined]
+        if warning.code == code:
+            return warning
+    raise AssertionError(f"missing warning {code!r}")
+
+
 def _by_name(result: object, name: str) -> object:
     for file in result.files:  # type: ignore[attr-defined]
         if file.action_name == name:
@@ -559,6 +566,197 @@ def test_alias_rewrite_falls_back_if_new_alias_shadows_a_column() -> None:
     view = convert_string("CREATE VIEW d.v (a) AS SELECT x FROM d.s ORDER BY a LIMIT 5;")
     assert view.files[0].action_type.value == "operations"
     assert "FALLBACK_SELECT_ALIAS" in _codes(view)
+
+
+def test_incremental_rebuild_warning_matches_the_protected_flag() -> None:
+    # Dataform Core rebuilds an incremental from its query when the target is
+    # missing, and on --full-refresh only when the action is not `protected`
+    # (shouldWriteIncrementally). The warning must not claim a rebuild trigger
+    # this action does not actually have.
+    protected = convert_string(
+        "INSERT INTO d.t SELECT 1 AS a;",
+        ConversionOptions(insert_strategy=InsertStrategy.INCREMENTAL),
+    )
+    assert "protected: true" in protected.files[0].content
+    message = _warning(protected, "INSERT_INCREMENTAL").message
+    assert "on its first run" in message
+    assert "protected: true keeps a later --full-refresh from rebuilding it." in message
+
+    unprotected = convert_string(
+        "INSERT INTO d.t SELECT 1 AS a;",
+        ConversionOptions(insert_strategy=InsertStrategy.INCREMENTAL, protect_incrementals=False),
+    )
+    assert "protected" not in unprotected.files[0].content
+    unprotected_message = _warning(unprotected, "INSERT_INCREMENTAL").message
+    assert "on first run or --full-refresh" in unprotected_message
+    assert "protected: true" not in unprotected_message
+
+
+def test_safe_merge_requires_the_join_to_pair_identically_named_columns() -> None:
+    # Dataform builds its MERGE as `ON T.<key> = S.<key>` from uniqueKey
+    # alone, so it can only reproduce a join that pairs same-named columns.
+    # `ON T.a = S.b` would silently become `ON T.a = S.a` - a different join,
+    # and wrong rows updated - so it must stay an operations action.
+    cross_named = convert_string(
+        "MERGE d.t T USING (SELECT a, b, v FROM d.s) S ON T.a = S.b "
+        "WHEN MATCHED THEN UPDATE SET a = S.a, b = S.b, v = S.v "
+        "WHEN NOT MATCHED THEN INSERT (a, b, v) VALUES (S.a, S.b, S.v);",
+        ConversionOptions(merge_strategy=MergeStrategy.INCREMENTAL_WHEN_SAFE),
+    )
+    assert cross_named.files[0].action_type.value == "operations"
+    assert "MERGE_FALLBACK" in _codes(cross_named)
+
+    # The same shape joined on matching names is the provable one.
+    same_named = convert_string(
+        "MERGE d.t T USING (SELECT a, b, v FROM d.s) S ON T.a = S.a "
+        "WHEN MATCHED THEN UPDATE SET a = S.a, b = S.b, v = S.v "
+        "WHEN NOT MATCHED THEN INSERT (a, b, v) VALUES (S.a, S.b, S.v);",
+        ConversionOptions(merge_strategy=MergeStrategy.INCREMENTAL_WHEN_SAFE),
+    )
+    assert same_named.files[0].action_type.value == "incremental"
+
+
+def test_if_expression_in_statement_position_cannot_open_a_block_frame() -> None:
+    # `IF(a, b, c)` is a function, not the scripting `IF cond THEN`. Opening a
+    # frame for it would swallow the following `;` and glue two statements
+    # into one action, silently changing what runs.
+    inside_block = split_statements(tokenize("BEGIN IF(a,1,2); SELECT 2; END; SELECT 3;"))
+    assert len(inside_block) == 2
+
+    top_level = split_statements(tokenize("SELECT IF(a,1,2); SELECT 2;"))
+    assert len(top_level) == 2
+
+    # ...while the scripting form still holds its block together.
+    scripting = split_statements(tokenize("IF x > 1 THEN SELECT 1; END IF; SELECT 2;"))
+    assert len(scripting) == 2
+
+
+def test_metadata_and_region_schemas_are_never_declared_as_sources() -> None:
+    # INFORMATION_SCHEMA views and region qualifiers are not relations a
+    # Dataform declaration can name, so --declare-external must skip them and
+    # leave the reference literal.
+    for path in (
+        "ds.INFORMATION_SCHEMA.TABLES",
+        "`region-us`.INFORMATION_SCHEMA.JOBS",
+        "`region-us.INFORMATION_SCHEMA.JOBS_BY_PROJECT`",
+    ):
+        result = convert_string(
+            f"CREATE OR REPLACE TABLE d.x AS SELECT * FROM {path};",
+            ConversionOptions(declare_external=True, default_dataset="ds"),
+        )
+        assert [file.relpath for file in result.files] == ["x.sqlx"], path
+        assert "${ref" not in result.files[0].content, path
+
+
+def test_comments_outside_a_typed_body_are_reported_not_silently_lost() -> None:
+    # A typed action emits only its query body, so a comment written in the
+    # surrounding DDL has nowhere to go. The SQL must not change, but the loss
+    # has to reach the report - every other lossy step in the pipeline does.
+    prefix = convert_string(
+        "CREATE OR REPLACE TABLE m.d -- rebuilt nightly\n"
+        "PARTITION BY DATE(ts) AS SELECT ts FROM s.o;",
+        ConversionOptions(annotate=False),
+    )
+    assert prefix.files[0].action_type.value == "table"
+    assert "rebuilt nightly" not in prefix.files[0].content
+    assert _warning(prefix, "COMMENT_DROPPED").line == 1  # type: ignore[attr-defined]
+
+    # A proven MERGE keeps only the source subquery; its WHEN clauses go away.
+    merged = convert_string(
+        "MERGE m.t T USING (SELECT id, v FROM m.s) S ON T.id=S.id\n"
+        "WHEN MATCHED THEN UPDATE SET id=S.id, v=S.v  -- refresh all columns\n"
+        "WHEN NOT MATCHED THEN INSERT (id,v) VALUES (S.id,S.v);",
+        ConversionOptions(annotate=False, merge_strategy=MergeStrategy.INCREMENTAL_WHEN_SAFE),
+    )
+    assert merged.files[0].action_type.value == "incremental"
+    assert _warning(merged, "COMMENT_DROPPED").line == 2  # type: ignore[attr-defined]
+
+    # Comments that DO get carried must never raise it.
+    for sql in (
+        "-- header\nCREATE OR REPLACE TABLE m.d AS SELECT 1 AS x;",
+        "CREATE OR REPLACE TABLE m.d AS SELECT 1 AS x -- inline\n;",
+        "CREATE OR REPLACE TABLE m.d AS SELECT 1 AS x;\n-- tail",
+        "CREATE TABLE m.d -- verbatim\n(x INT64);",
+        "DECLARE v INT64; -- script\nINSERT INTO m.d SELECT 1;",
+    ):
+        assert "COMMENT_DROPPED" not in _codes(convert_string(sql, ConversionOptions())), sql
+
+
+def test_comment_attribution_is_exact_across_statement_boundaries() -> None:
+    # Leading/trailing/body comment windows are resolved by binary search over
+    # the file's comment spans (a full rescan per draft is quadratic in the
+    # number of commented statements). Each comment must still land in exactly
+    # one action, and in the same one as before.
+    sql = (
+        "-- header one\n"
+        "-- header two\n"
+        "CREATE OR REPLACE TABLE d.a AS SELECT 1 AS x; -- after a\n"
+        "/* between */\n"
+        "CREATE OR REPLACE TABLE d.b AS SELECT 2 AS y -- inline b\n"
+        ";\n"
+        "-- tail one\n"
+        "/* tail two */\n"
+    )
+    result = convert_string(sql, ConversionOptions(annotate=False))
+    first = _by_name(result, "a").content  # type: ignore[attr-defined]
+    second = _by_name(result, "b").content  # type: ignore[attr-defined]
+
+    assert "-- header one\n-- header two" in first
+    assert "after a" not in first
+    # A comment after the previous terminator belongs to the next statement.
+    assert "-- after a" in second
+    assert "/* between */" in second
+    assert "SELECT 2 AS y -- inline b" in second
+    # Comments past the final terminator ride along with the last action.
+    assert "-- tail one" in second
+    assert "/* tail two */" in second
+
+    joined = "".join(file.content for file in result.files)
+    for fragment in (
+        "header one",
+        "header two",
+        "after a",
+        "between",
+        "inline b",
+        "tail one",
+        "tail two",
+    ):
+        assert joined.count(fragment) == 1, fragment
+
+
+def test_set_operation_order_by_blocks_the_alias_rewrite() -> None:
+    # A set operation's trailing ORDER BY can only name the query's OUTPUT
+    # columns; unlike a simple query there is no FROM clause left for a
+    # renamed bare column to fall back to. Aliasing `c1` to `x` here would
+    # leave `ORDER BY c1` naming a column that no longer exists.
+    view = convert_string(
+        "CREATE VIEW d.v (x, y) AS "
+        "SELECT c1, c2 FROM d.t UNION ALL SELECT c3, c4 FROM d.u ORDER BY c1;"
+    )
+    assert view.files[0].action_type.value == "operations"
+    assert "FALLBACK_SELECT_ALIAS" in _codes(view)
+
+    inserted = convert_string(
+        "INSERT INTO d.t (x, y) "
+        "SELECT c1, c2 FROM d.a UNION ALL SELECT c3, c4 FROM d.b ORDER BY c2;",
+        ConversionOptions(insert_strategy=InsertStrategy.INCREMENTAL),
+    )
+    assert inserted.files[0].action_type.value == "operations"
+    assert "FALLBACK_SELECT_ALIAS" in _codes(inserted)
+
+    # Ordinals name positions, not output columns, so they stay convertible.
+    ordinal = convert_string(
+        "CREATE VIEW d.v (x, y) AS "
+        "SELECT c1, c2 FROM d.t UNION ALL SELECT c3, c4 FROM d.u ORDER BY 1;"
+    )
+    assert ordinal.files[0].action_type.value == "view"
+    assert "SELECT c1 AS x, c2 AS y FROM d.t UNION ALL" in ordinal.files[0].content
+
+    # `SELECT * EXCEPT (column)` is a projection modifier, not a set
+    # operator, and must not switch the stricter rule on by itself.
+    projection = convert_string("CREATE VIEW d.v (x, y) AS SELECT c1, c2 FROM d.t ORDER BY c1;")
+    assert projection.files[0].action_type.value == "view"
+    assert "SELECT c1 AS x, c2 AS y FROM d.t ORDER BY c1" in projection.files[0].content
 
 
 def test_case_expression_keyword_column_cannot_glue_statements() -> None:

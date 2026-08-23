@@ -8,7 +8,8 @@
 
 Generates a realistic multi-file warehouse (CTAS chains with metadata,
 INSERTs, MERGEs, comments, cross-file references), converts it, and
-prints throughput. Used to produce the numbers quoted in the README.
+prints throughput. Results depend on hardware, Python version and corpus
+shape, so run it on representative SQL to size your own migration.
 
 Run:  python examples/06_benchmark.py [--files N] [--statements M] [--jobs J]
 """

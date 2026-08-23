@@ -12,7 +12,12 @@ of SQL text is fundamentally not enough - so you know exactly what to review.
 2. **Character-for-character source fidelity** for all SQL outside explicit
    rewrites (references, select-list aliases, `${self()}`, and the constant
    SQLX placeholders used to preserve literal `${` text and neutralize
-   SQLX-unsafe comments). Generated SQLX is UTF-8 with `\n` newlines.
+   SQLX-unsafe comments). Generated SQLX is UTF-8, and files are written
+   without newline translation: the structure sql2sqlx adds (the `config`
+   block, blank lines, joined comments) uses `\n`, while newlines *inside*
+   preserved source spans are carried through unchanged - a CRLF source
+   therefore keeps CRLF inside its body, which is what character-for-character
+   fidelity requires.
 3. **Deterministic output**: identical inputs and options yield byte-identical
    trees, whatever the worker count.
 4. **Failure isolation**: a broken file is reported and skipped; the rest of

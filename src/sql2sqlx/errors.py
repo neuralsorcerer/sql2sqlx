@@ -50,11 +50,16 @@ class LexError(Sql2SqlxError):
 
 
 class SplitError(Sql2SqlxError):
-    """Raised when statement splitting fails irrecoverably.
+    """Reserved for a statement-splitting failure. **Never raised today.**
 
-    In practice the splitter is lenient (mismatched ``END`` markers are
-    tolerated), so this error is reserved for structural impossibilities
-    such as unbalanced parentheses at end of input.
+    :mod:`sql2sqlx.splitter` has no failure mode: a mismatched ``END`` pops
+    the innermost frame, and unbalanced parentheses simply keep the
+    following text attached to the current statement. Both degrade into
+    "statements stay together", which the classifier then handles safely as
+    a verbatim ``operations`` action - a strictly better outcome than
+    rejecting a file. Nothing in the package raises this exception, so a
+    ``except SplitError`` handler is dead code; it stays exported for
+    API compatibility and as the slot a future strict mode would use.
     """
 
     def __init__(self, message: str, line: int = 0, column: int = 0) -> None:

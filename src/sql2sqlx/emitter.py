@@ -113,7 +113,13 @@ def sqlx_escape_edits(tokens: Sequence[Token]) -> List[Tuple[int, int, str]]:
     would introduce a ``\\n``/``\\t`` escape that Dataform's placeholder-string
     lexer rejects - so each ``${`` in such a string is escaped in place, where
     the surrounding SQL string state carries the raw characters unchanged.
-    GoogleSQL comments that are unsafe in SQLX are normalized as token edits.
+
+    A ``COMMENT`` token is normalized in place, but only a caller that lexed
+    with ``keep_comments=True`` ever supplies one: the conversion pipeline
+    feeds this function the splitter's significant-token stream, which
+    carries no comments, and normalizes a body's comments separately when it
+    assembles that body's span edits. Do not remove that second pass on the
+    assumption this one covers it.
     """
     edits: List[Tuple[int, int, str]] = []
     for token in tokens:

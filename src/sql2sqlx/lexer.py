@@ -36,12 +36,17 @@ The lexer recognizes, per the GoogleSQL lexical specification:
 Design notes
 ------------
 The scanner is a single compiled alternation executed by CPython's C
-regex engine, which gives 20-60 MB/s throughput while remaining exactly
-character-accurate. Every alternative in the pattern is written so that
-matching is strictly linear (no ambiguous nested quantifiers, hence no
-catastrophic backtracking). Anything the master pattern cannot match is
-diagnosed by a small fallback that raises :class:`~sql2sqlx.errors.LexError`
-with an exact line/column.
+regex engine, which keeps the per-character work in C while remaining
+exactly character-accurate. Every alternative in the pattern is written so
+that matching is strictly linear in the input length (no ambiguous nested
+quantifiers, hence no catastrophic backtracking), so cost scales with the
+size of the SQL and never explodes on an adversarial literal or comment.
+Wall-clock throughput is dominated by the per-token Python work - one
+``match()`` call and one :class:`Token` allocation each - so it tracks the
+token count more closely than the byte count and is best measured on your
+own corpus with ``examples/06_benchmark.py``. Anything the master pattern
+cannot match is diagnosed by a small fallback that raises
+:class:`~sql2sqlx.errors.LexError` with an exact line/column.
 
 Tokens store ``(kind, text, start, end)`` where ``start``/``end`` are
 character offsets into the original text; downstream stages rewrite SQL
